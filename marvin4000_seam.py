@@ -12,6 +12,10 @@ import signal
 import subprocess as sp
 import threading
 import time
+import sys
+import termios
+import tty
+import select
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -143,6 +147,7 @@ class Transcriber(threading.Thread):
         self.audio_buffer : List[np.ndarray] = []
         self.last_flush   = time.time()
         self.vad          = webrtcvad.Vad(1)
+        self._stop        = threading.Event()
 
         self.last_partial_text = ""
         self.last_partial_translation = ""
@@ -181,6 +186,9 @@ class Transcriber(threading.Thread):
         # Fixed language config
         self.src_lang = NMT_SOURCE_LANG
         self.tgt_lang = NMT_TARGET_LANG
+
+    def stop(self):
+        self._stop.set()
 
 
     def _has_sentence_end(self, txt: str) -> bool:
@@ -328,7 +336,7 @@ class Transcriber(threading.Thread):
     
     def run(self):
         log("Transcriber ready")
-        while True:
+        while not self._stop.is_set():
             try:
                 chunk = self.q.get(timeout=0.5)
             except queue.Empty:
@@ -395,6 +403,32 @@ class Transcriber(threading.Thread):
                     log(f"Fragment of {len(out)/TARGET_SR:.2f}s (< {MIN_SEGMENT_SEC}s), waiting for more before flush")
 
 
+class KeyListener(threading.Thread):
+    def __init__(self, on_esc, stop_event: threading.Event):
+        super().__init__(daemon=True)
+        self.on_esc = on_esc
+        self.stop_event = stop_event
+
+    def run(self):
+        if not sys.stdin.isatty():
+            log("STDIN no es TTY, el listener de ESC está deshabilitado")
+            return
+
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            while not self.stop_event.is_set():
+                rlist, _, _ = select.select([sys.stdin], [], [], 0.2)
+                if rlist:
+                    ch = sys.stdin.read(1)
+                    if ch == "\x1b":
+                        self.on_esc()
+                        break
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
 # Main
 def main():
     parser = argparse.ArgumentParser(description="Marvin4000 - Real-time speech transcription and translation")
@@ -411,6 +445,7 @@ def main():
     NMT_TARGET_LANG = args.nmt_target
 
     q_audio = queue.Queue(maxsize=QUEUE_MAX)
+    stop_event = threading.Event()
     
     # Initialize transcriber blocking until models load
     transcriber = Transcriber(q_audio)
@@ -421,13 +456,23 @@ def main():
     prod.start()
 
     def stop_all(*_):
-        prod.stop(); prod.join(timeout=1)
+        if stop_event.is_set():
+            return
+        stop_event.set()
         log("Shutting down")
-        raise SystemExit
+        prod.stop()
+        transcriber.stop()
 
     signal.signal(signal.SIGINT, stop_all)
     signal.signal(signal.SIGTERM, stop_all)
-    signal.pause()
+
+    log("Presiona ESC para detener")
+    key_listener = KeyListener(stop_all, stop_event)
+    key_listener.start()
+
+    stop_event.wait()
+    prod.join(timeout=2)
+    transcriber.join(timeout=2)
 
 if __name__ == "__main__":
     main()

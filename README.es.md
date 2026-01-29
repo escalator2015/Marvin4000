@@ -76,7 +76,7 @@ python detect_audio_devices.py
 # $ python marvin4000_seam.py --audio-device "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
 
 # 3. Iniciar transcripción/traducción con el dispositivo monitor adecuado
-python marvin4000_seam.py --audio-device "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
+python marvin4000_seam.py --audio-device "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor" --asr-lang "en" --nmt-source "eng" --nmt-target "glg" 
 
 python marvin4000_nllb.py --audio-device "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor" --asr-lang "de" --nmt-source "deu_Latn" --nmt-target "spa_Latn"
 ```
